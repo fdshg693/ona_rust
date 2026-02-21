@@ -1,0 +1,4 @@
+{
+	"name": "ona_rust",
+	"image": "mcr.microsoft.com/devcontainers/rust:1-bookworm"
+}
