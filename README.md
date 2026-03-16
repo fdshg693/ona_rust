@@ -1,66 +1,66 @@
 # ona_rust
 
-コマンドラインで動作するTodoリスト管理ツールです。タスクの追加・完了・削除と、カテゴリによる分類をサポートします。データはホームディレクトリにJSONファイルとして保存されます。
+A command-line Todo list manager. Supports adding, completing, and removing tasks, with optional category tagging. Data is persisted as JSON files in the home directory.
 
-## ビルド
+## Build
 
 ```bash
 cargo build --release
 ```
 
-ビルド後のバイナリは `target/release/ona_rust` に生成されます。
+The binary is output to `target/release/ona_rust`.
 
-## 使い方
+## Usage
 
 ```
 todo <command> [args]
 ```
 
-### コマンド一覧
+### Commands
 
-| コマンド | 説明 |
+| Command | Description |
 |---|---|
-| `add <text>` | Todoを追加する |
-| `add --cat <category> <text>` | カテゴリ付きでTodoを追加する |
-| `list` | すべてのTodoを表示する |
-| `done <id>` | 指定したTodoを完了にする |
-| `remove <id>` | 指定したTodoを削除する |
-| `category add <name>` | カスタムカテゴリを追加する |
-| `category list` | 利用可能なカテゴリを一覧表示する |
+| `add <text>` | Add a new todo |
+| `add --cat <category> <text>` | Add a todo with a category |
+| `list` | List all todos |
+| `done <id>` | Mark a todo as done |
+| `remove <id>` | Remove a todo |
+| `category add <name>` | Add a custom category |
+| `category list` | List available categories |
 
-### 使用例
+### Examples
 
 ```bash
-# Todoを追加
-todo add 牛乳を買う
+# Add a todo
+todo add Buy milk
 
-# カテゴリ付きで追加
-todo add --cat shopping 牛乳を買う
+# Add a todo with a category
+todo add --cat shopping Buy milk
 
-# 一覧表示
+# List todos
 todo list
-# [ ] #1 [shopping]: 牛乳を買う
+# [ ] #1 [shopping]: Buy milk
 
-# 完了にする
+# Mark as done
 todo done 1
 
-# 削除する
+# Remove a todo
 todo remove 1
 
-# カスタムカテゴリを追加
+# Add a custom category
 todo category add hobby
 
-# カテゴリ一覧を表示
+# List categories
 todo category list
 ```
 
-## カテゴリ
+## Categories
 
-組み込みカテゴリとして `work`、`personal`、`shopping`、`health` が用意されています。`category add` で任意のカテゴリを追加できます。
+Built-in categories: `work`, `personal`, `shopping`, `health`. Use `category add` to define custom ones.
 
-## データの保存先
+## Data Files
 
-| ファイル | 内容 |
+| File | Contents |
 |---|---|
-| `~/.todos.json` | Todoリスト |
-| `~/.todo_categories.json` | カスタムカテゴリ |
+| `~/.todos.json` | Todo list |
+| `~/.todo_categories.json` | Custom categories |
