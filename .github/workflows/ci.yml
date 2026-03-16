@@ -32,7 +32,7 @@ jobs:
         run: cargo build
 
       - name: Test
-        run: cargo test --features test-helpers
+        run: cargo test
 
       - name: Clippy
-        run: cargo clippy --features test-helpers -- -D warnings
+        run: cargo clippy -- -D warnings
