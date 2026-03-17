@@ -5,6 +5,9 @@ use crate::todo::{
 };
 
 pub fn cmd_add(store: &Store, text: &str, category: Option<Category>) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("Todo text cannot be empty.".to_string());
+    }
     let mut todos = load_todos(store)?;
     let id = next_id(&todos)?;
     todos.push(Todo {
@@ -123,82 +126,49 @@ pub fn print_usage() {
     eprintln!("  category list                    List all categories");
 }
 
+fn parse_id(s: &str) -> Result<u32, String> {
+    s.parse().map_err(|_| format!("Invalid id: {s}"))
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
-    run_with_store(args, &Store::default())
+    run_with_store(args, &Store::new()?)
 }
 
 pub fn run_with_store(args: &[String], store: &Store) -> Result<(), String> {
-    if args.len() < 2 {
-        print_usage();
-        return Err(String::new());
-    }
+    // Skip argv[0] (program name) and match on the remaining arguments.
+    let argv: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
 
-    match args[1].as_str() {
-        "add" => {
-            if args.len() < 3 {
-                return Err("Usage: todo add [--cat <category>] <text>".to_string());
-            }
-            if args[2] == "--cat" {
-                if args.len() < 5 {
-                    return Err("Usage: todo add --cat <category> <text>".to_string());
-                }
-                let custom_cats = load_custom_categories(store)?;
-                let category = parse_category(&args[3], &custom_cats).map_err(|e| {
-                    format!("{e}\nUse 'todo category list' to see available categories.")
-                })?;
-                let text = args[4..].join(" ");
-                cmd_add(store, &text, Some(category))
-            } else {
-                let text = args[2..].join(" ");
-                cmd_add(store, &text, None)
-            }
+    match argv.as_slice() {
+        ["add", "--cat", cat, rest @ ..] if !rest.is_empty() => {
+            let custom_cats = load_custom_categories(store)?;
+            let category = parse_category(cat, &custom_cats).map_err(|e| {
+                format!("{e}\nUse 'todo category list' to see available categories.")
+            })?;
+            cmd_add(store, &rest.join(" "), Some(category))
         }
-        "list" => cmd_list(store),
-        "done" => {
-            if args.len() < 3 {
-                return Err("Usage: todo done <id>".to_string());
-            }
-            let id: u32 = args[2]
-                .parse()
-                .map_err(|_| format!("Invalid id: {}", args[2]))?;
-            cmd_done(store, id)
+        ["add", "--cat", ..] => Err("Usage: todo add --cat <category> <text>".to_string()),
+        ["add", rest @ ..] if !rest.is_empty() => cmd_add(store, &rest.join(" "), None),
+        ["add"] => Err("Usage: todo add [--cat <category>] <text>".to_string()),
+        ["list"] => cmd_list(store),
+        ["done", id_str] => cmd_done(store, parse_id(id_str)?),
+        ["done", ..] => Err("Usage: todo done <id>".to_string()),
+        ["edit", id_str, rest @ ..] if !rest.is_empty() => {
+            cmd_edit(store, parse_id(id_str)?, &rest.join(" "))
         }
-        "edit" => {
-            if args.len() < 4 {
-                return Err("Usage: todo edit <id> <new text>".to_string());
-            }
-            let id: u32 = args[2]
-                .parse()
-                .map_err(|_| format!("Invalid id: {}", args[2]))?;
-            let new_text = args[3..].join(" ");
-            cmd_edit(store, id, &new_text)
+        ["edit", ..] => Err("Usage: todo edit <id> <new text>".to_string()),
+        ["remove", id_str] => cmd_remove(store, parse_id(id_str)?),
+        ["remove", ..] => Err("Usage: todo remove <id>".to_string()),
+        ["category", "add", name] => cmd_category_add(store, name),
+        ["category", "add", ..] => Err("Usage: todo category add <name>".to_string()),
+        ["category", "list"] => cmd_category_list(store),
+        ["category", sub, ..] => Err(format!("Unknown subcommand: category {sub}")),
+        ["category"] => Err("Usage: todo category <add|list>".to_string()),
+        [cmd, ..] => {
+            eprintln!("Unknown command: {cmd}");
+            print_usage();
+            Err(String::new())
         }
-        "remove" => {
-            if args.len() < 3 {
-                return Err("Usage: todo remove <id>".to_string());
-            }
-            let id: u32 = args[2]
-                .parse()
-                .map_err(|_| format!("Invalid id: {}", args[2]))?;
-            cmd_remove(store, id)
-        }
-        "category" => {
-            if args.len() < 3 {
-                return Err("Usage: todo category <add|list>".to_string());
-            }
-            match args[2].as_str() {
-                "add" => {
-                    if args.len() < 4 {
-                        return Err("Usage: todo category add <name>".to_string());
-                    }
-                    cmd_category_add(store, &args[3])
-                }
-                "list" => cmd_category_list(store),
-                _ => Err(format!("Unknown subcommand: category {}", args[2])),
-            }
-        }
-        _ => {
-            eprintln!("Unknown command: {}", args[1]);
+        [] => {
             print_usage();
             Err(String::new())
         }

@@ -1,59 +1,54 @@
-use serde::Serialize;
+use rusqlite::Connection;
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 
-pub fn home_dir() -> PathBuf {
+fn home_dir() -> Result<PathBuf, String> {
     env::var("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+        .map_err(|_| "HOME environment variable is not set".to_string())
 }
 
-pub fn default_todos_path() -> PathBuf {
-    home_dir().join(".todos.json")
-}
-
-pub fn default_categories_path() -> PathBuf {
-    home_dir().join(".todo_categories.json")
-}
-
-pub fn load_json<T: serde::de::DeserializeOwned + Default>(path: &PathBuf) -> Result<T, String> {
-    if !path.exists() {
-        return Ok(T::default());
-    }
-    let data = fs::read_to_string(path)
-        .map_err(|e| format!("Error reading {}: {e}", path.display()))?;
-    serde_json::from_str(&data)
-        .map_err(|e| format!("Error parsing {}: {e}", path.display()))
-}
-
-pub fn save_json<T: Serialize + ?Sized>(path: &PathBuf, value: &T) -> Result<(), String> {
-    let data = serde_json::to_string_pretty(value).map_err(|e| format!("serialize: {e}"))?;
-    fs::write(path, data).map_err(|e| format!("Error writing {}: {e}", path.display()))
-}
-
-/// Holds the file paths used for persistence. Override in tests to use temp files.
+/// Holds the path to the SQLite database file.
 #[derive(Clone)]
 pub struct Store {
-    pub todos_path: PathBuf,
-    pub categories_path: PathBuf,
-}
-
-impl Default for Store {
-    fn default() -> Self {
-        Self {
-            todos_path: default_todos_path(),
-            categories_path: default_categories_path(),
-        }
-    }
+    pub db_path: PathBuf,
 }
 
 impl Store {
+    /// Construct a Store using the user's home directory. Returns an error if HOME is unset.
+    pub fn new() -> Result<Self, String> {
+        Ok(Self {
+            db_path: home_dir()?.join(".todos.db"),
+        })
+    }
+
     /// Construct a Store rooted at an arbitrary directory. Useful in tests.
     pub fn from_dir(dir: &std::path::Path) -> Self {
         Self {
-            todos_path: dir.join("todos.json"),
-            categories_path: dir.join("categories.json"),
+            db_path: dir.join("todos.db"),
         }
     }
+
+    /// Open a connection and ensure both tables exist.
+    pub fn open(&self) -> Result<Connection, String> {
+        let conn = Connection::open(&self.db_path)
+            .map_err(|e| format!("Failed to open database: {e}"))?;
+        init_schema(&conn)?;
+        Ok(conn)
+    }
+}
+
+fn init_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS todos (
+            id       INTEGER PRIMARY KEY,
+            text     TEXT    NOT NULL,
+            done     INTEGER NOT NULL DEFAULT 0,
+            category TEXT
+        );
+        CREATE TABLE IF NOT EXISTS categories (
+            name TEXT PRIMARY KEY
+        );",
+    )
+    .map_err(|e| format!("Failed to initialise schema: {e}"))
 }
