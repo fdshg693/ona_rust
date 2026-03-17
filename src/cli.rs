@@ -4,6 +4,14 @@ use crate::todo::{
     clear_category_from_todos, load_custom_categories, load_todos, next_id,
     rename_category_in_todos, save_custom_categories, save_todos, Todo,
 };
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    execute, queue,
+    style::Print,
+    terminal::{self, ClearType},
+};
+use std::io::{stdout, Write};
 
 pub fn cmd_add(store: &Store, text: &str, category: Option<Category>) -> Result<(), String> {
     if text.trim().is_empty() {
@@ -25,13 +33,26 @@ pub fn cmd_add(store: &Store, text: &str, category: Option<Category>) -> Result<
     Ok(())
 }
 
-pub fn cmd_list(store: &Store) -> Result<(), String> {
+pub const PAGE_SIZE: usize = 10;
+
+pub fn cmd_list(store: &Store, page: usize) -> Result<(), String> {
+    if page == 0 {
+        return Err("Page number must be 1 or greater.".to_string());
+    }
     let todos = load_todos(store)?;
     if todos.is_empty() {
         println!("No todos.");
         return Ok(());
     }
-    for t in &todos {
+    let total_pages = todos.len().div_ceil(PAGE_SIZE);
+    if page > total_pages {
+        return Err(format!(
+            "Page {page} out of range (total pages: {total_pages})."
+        ));
+    }
+    let start = (page - 1) * PAGE_SIZE;
+    let end = (start + PAGE_SIZE).min(todos.len());
+    for t in &todos[start..end] {
         let mark = if t.done { "x" } else { " " };
         let cat_label = match &t.category {
             Some(c) => format!(" [{c}]"),
@@ -39,7 +60,97 @@ pub fn cmd_list(store: &Store) -> Result<(), String> {
         };
         println!("[{mark}] #{}{}: {}", t.id, cat_label, t.text);
     }
+    if total_pages > 1 {
+        println!("Page {page}/{total_pages}");
+    }
     Ok(())
+}
+
+/// Render one page of todos into the already-cleared terminal area.
+fn render_page(todos: &[Todo], page: usize, total_pages: usize) -> Result<(), String> {
+    let start = (page - 1) * PAGE_SIZE;
+    let end = (start + PAGE_SIZE).min(todos.len());
+    let mut out = stdout();
+    // Move to top-left and clear from cursor down so stale lines are erased.
+    queue!(out, cursor::MoveTo(0, 0), terminal::Clear(ClearType::FromCursorDown))
+        .map_err(|e| format!("render: {e}"))?;
+    for t in &todos[start..end] {
+        let mark = if t.done { "x" } else { " " };
+        let cat_label = match &t.category {
+            Some(c) => format!(" [{c}]"),
+            None => String::new(),
+        };
+        queue!(out, Print(format!("[{mark}] #{}{}: {}\r\n", t.id, cat_label, t.text)))
+            .map_err(|e| format!("render: {e}"))?;
+    }
+    queue!(
+        out,
+        Print(format!(
+            "\r\nPage {page}/{total_pages}  \u{2190}/\u{2192} navigate  q quit\r\n"
+        ))
+    )
+    .map_err(|e| format!("render: {e}"))?;
+    out.flush().map_err(|e| format!("flush: {e}"))
+}
+
+/// Interactive pager: left/right arrows navigate pages, q/Esc/Enter exits.
+pub fn cmd_list_interactive(store: &Store) -> Result<(), String> {
+    let todos = load_todos(store)?;
+    if todos.is_empty() {
+        println!("No todos.");
+        return Ok(());
+    }
+    let total_pages = todos.len().div_ceil(PAGE_SIZE);
+    // Non-interactive: skip raw mode when there is only one page.
+    if total_pages == 1 {
+        return cmd_list(store, 1);
+    }
+
+    let mut page: usize = 1;
+    let mut out = stdout();
+    terminal::enable_raw_mode().map_err(|e| format!("enable raw mode: {e}"))?;
+    // Hide cursor while paging to reduce flicker.
+    let _ = execute!(out, cursor::Hide);
+
+    let result = render_page(&todos, page, total_pages).and_then(|()| {
+        loop {
+            match event::read() {
+                Ok(Event::Key(KeyEvent { code, modifiers, .. })) => match code {
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        if page < total_pages {
+                            page += 1;
+                            if let Err(e) = render_page(&todos, page, total_pages) {
+                                break Err(e);
+                            }
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        if page > 1 {
+                            page -= 1;
+                            if let Err(e) = render_page(&todos, page, total_pages) {
+                                break Err(e);
+                            }
+                        }
+                    }
+                    KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        break Ok(());
+                    }
+                    KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => {
+                        break Ok(());
+                    }
+                    _ => {}
+                },
+                Ok(_) => {}
+                Err(e) => break Err(format!("read event: {e}")),
+            }
+        }
+    });
+
+    // Always restore terminal state. If cleanup fails, prefer the loop result
+    // so the caller sees the original error rather than a secondary one.
+    let _ = execute!(out, cursor::Show, terminal::Clear(ClearType::FromCursorDown));
+    let cleanup = terminal::disable_raw_mode().map_err(|e| format!("disable raw mode: {e}"));
+    result.or(cleanup)
 }
 
 pub fn cmd_done(store: &Store, id: u32) -> Result<(), String> {
@@ -168,7 +279,7 @@ pub fn print_usage() {
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  add [--cat <category>] <text>        Add a new todo");
-    eprintln!("  list                                  List all todos");
+    eprintln!("  list [--page <n>]                      List todos (10 per page)");
     eprintln!("  done <id>                             Mark a todo as done");
     eprintln!("  edit <id> <new text>                  Update the text of a todo");
     eprintln!("  remove <id>                           Remove a todo");
@@ -201,7 +312,14 @@ pub fn run_with_store(args: &[String], store: &Store) -> Result<(), String> {
         ["add", "--cat", ..] => Err("Usage: todo add --cat <category> <text>".to_string()),
         ["add", rest @ ..] if !rest.is_empty() => cmd_add(store, &rest.join(" "), None),
         ["add"] => Err("Usage: todo add [--cat <category>] <text>".to_string()),
-        ["list"] => cmd_list(store),
+        ["list"] => cmd_list_interactive(store),
+        ["list", "--page", page_str] => {
+            let page: usize = page_str
+                .parse()
+                .map_err(|_| format!("Invalid page number: {page_str}"))?;
+            cmd_list(store, page)
+        }
+        ["list", ..] => Err("Usage: todo list [--page <n>]".to_string()),
         ["done", id_str] => cmd_done(store, parse_id(id_str)?),
         ["done", ..] => Err("Usage: todo done <id>".to_string()),
         ["edit", id_str, rest @ ..] if !rest.is_empty() => {

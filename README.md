@@ -8,7 +8,7 @@ A command-line Todo list manager. Supports adding, completing, and removing task
 cargo build --release
 ```
 
-The binary is output to `target/release/ona_rust`.
+The binary is output to `target/release/todo`.
 
 ## Usage
 
@@ -22,7 +22,8 @@ todo <command> [args]
 |---|---|
 | `add <text>` | Add a new todo |
 | `add --cat <category> <text>` | Add a todo with a category |
-| `list` | List all todos |
+| `list` | List todos interactively (←/→ to page) |
+| `list --page <n>` | Print a specific page non-interactively |
 | `done <id>` | Mark a todo as done |
 | `edit <id> <new text>` | Update the text of a todo |
 | `remove <id>` | Remove a todo |
@@ -68,5 +69,4 @@ Built-in categories: `work`, `personal`, `shopping`, `health`. Use `category add
 
 | File | Contents |
 |---|---|
-| `~/.todos.json` | Todo list |
-| `~/.todo_categories.json` | Custom categories |
+| `~/.todos.db` | SQLite database — `todos` and `categories` tables |
