@@ -1,7 +1,8 @@
 use crate::category::{parse_category, Category, BUILTIN_CATEGORIES};
 use crate::storage::Store;
 use crate::todo::{
-    load_custom_categories, load_todos, next_id, save_custom_categories, save_todos, Todo,
+    clear_category_from_todos, load_custom_categories, load_todos, next_id,
+    rename_category_in_todos, save_custom_categories, save_todos, Todo,
 };
 
 pub fn cmd_add(store: &Store, text: &str, category: Option<Category>) -> Result<(), String> {
@@ -98,6 +99,55 @@ pub fn cmd_category_add(store: &Store, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn cmd_category_remove(store: &Store, name: &str) -> Result<(), String> {
+    let lower = name.to_lowercase();
+    if BUILTIN_CATEGORIES.contains(&lower.as_str()) {
+        return Err(format!("'{name}' is a built-in category and cannot be removed."));
+    }
+    let mut cats = load_custom_categories(store)?;
+    let len = cats.len();
+    cats.retain(|c| c.to_lowercase() != lower);
+    if cats.len() == len {
+        return Err(format!("Category '{name}' not found."));
+    }
+    save_custom_categories(store, &cats)?;
+    clear_category_from_todos(store, name)?;
+    println!("Removed category: {name}");
+    Ok(())
+}
+
+pub fn cmd_category_edit(store: &Store, old_name: &str, new_name: &str) -> Result<(), String> {
+    let old_lower = old_name.to_lowercase();
+    let new_lower = new_name.to_lowercase();
+
+    if BUILTIN_CATEGORIES.contains(&old_lower.as_str()) {
+        return Err(format!("'{old_name}' is a built-in category and cannot be renamed."));
+    }
+    if new_name.trim().is_empty() {
+        return Err("Category name cannot be empty.".to_string());
+    }
+    if BUILTIN_CATEGORIES.contains(&new_lower.as_str()) {
+        return Err(format!("'{new_name}' is a built-in category name."));
+    }
+
+    let mut cats = load_custom_categories(store)?;
+
+    let pos = cats
+        .iter()
+        .position(|c| c.to_lowercase() == old_lower)
+        .ok_or_else(|| format!("Category '{old_name}' not found."))?;
+
+    if cats.iter().any(|c| c.to_lowercase() == new_lower) {
+        return Err(format!("Category '{new_name}' already exists."));
+    }
+
+    cats[pos] = new_name.to_string();
+    save_custom_categories(store, &cats)?;
+    rename_category_in_todos(store, old_name, new_name)?;
+    println!("Renamed category '{old_name}' to '{new_name}'.");
+    Ok(())
+}
+
 pub fn cmd_category_list(store: &Store) -> Result<(), String> {
     println!("Built-in:");
     for c in BUILTIN_CATEGORIES {
@@ -117,13 +167,15 @@ pub fn print_usage() {
     eprintln!("Usage: todo <command> [args]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  add [--cat <category>] <text>   Add a new todo");
-    eprintln!("  list                             List all todos");
-    eprintln!("  done <id>                        Mark a todo as done");
-    eprintln!("  edit <id> <new text>             Update the text of a todo");
-    eprintln!("  remove <id>                      Remove a todo");
-    eprintln!("  category add <name>              Add a custom category");
-    eprintln!("  category list                    List all categories");
+    eprintln!("  add [--cat <category>] <text>        Add a new todo");
+    eprintln!("  list                                  List all todos");
+    eprintln!("  done <id>                             Mark a todo as done");
+    eprintln!("  edit <id> <new text>                  Update the text of a todo");
+    eprintln!("  remove <id>                           Remove a todo");
+    eprintln!("  category add <name>                   Add a custom category");
+    eprintln!("  category edit <name> <new name>       Rename a custom category");
+    eprintln!("  category remove <name>                Remove a custom category");
+    eprintln!("  category list                         List all categories");
 }
 
 fn parse_id(s: &str) -> Result<u32, String> {
@@ -160,9 +212,15 @@ pub fn run_with_store(args: &[String], store: &Store) -> Result<(), String> {
         ["remove", ..] => Err("Usage: todo remove <id>".to_string()),
         ["category", "add", name] => cmd_category_add(store, name),
         ["category", "add", ..] => Err("Usage: todo category add <name>".to_string()),
+        ["category", "edit", old_name, new_name] => cmd_category_edit(store, old_name, new_name),
+        ["category", "edit", ..] => {
+            Err("Usage: todo category edit <name> <new name>".to_string())
+        }
+        ["category", "remove", name] => cmd_category_remove(store, name),
+        ["category", "remove", ..] => Err("Usage: todo category remove <name>".to_string()),
         ["category", "list"] => cmd_category_list(store),
         ["category", sub, ..] => Err(format!("Unknown subcommand: category {sub}")),
-        ["category"] => Err("Usage: todo category <add|list>".to_string()),
+        ["category"] => Err("Usage: todo category <add|edit|remove|list>".to_string()),
         [cmd, ..] => {
             eprintln!("Unknown command: {cmd}");
             print_usage();
