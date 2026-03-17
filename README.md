@@ -27,6 +27,8 @@ todo <command> [args]
 | `edit <id> <new text>` | Update the text of a todo |
 | `remove <id>` | Remove a todo |
 | `category add <name>` | Add a custom category |
+| `category edit <name> <new name>` | Rename a custom category |
+| `category remove <name>` | Remove a custom category |
 | `category list` | List available categories |
 
 ### Examples
