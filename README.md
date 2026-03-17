@@ -24,6 +24,7 @@ todo <command> [args]
 | `add --cat <category> <text>` | Add a todo with a category |
 | `list` | List all todos |
 | `done <id>` | Mark a todo as done |
+| `edit <id> <new text>` | Update the text of a todo |
 | `remove <id>` | Remove a todo |
 | `category add <name>` | Add a custom category |
 | `category list` | List available categories |
@@ -43,6 +44,9 @@ todo list
 
 # Mark as done
 todo done 1
+
+# Edit a todo's text
+todo edit 1 Buy oat milk
 
 # Remove a todo
 todo remove 1

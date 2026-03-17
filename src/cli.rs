@@ -65,6 +65,21 @@ pub fn cmd_remove(store: &Store, id: u32) -> Result<(), String> {
     Ok(())
 }
 
+pub fn cmd_edit(store: &Store, id: u32, new_text: &str) -> Result<(), String> {
+    if new_text.trim().is_empty() {
+        return Err("Todo text cannot be empty.".to_string());
+    }
+    let mut todos = load_todos(store)?;
+    if let Some(t) = todos.iter_mut().find(|t| t.id == id) {
+        t.text = new_text.to_string();
+        save_todos(store, &todos)?;
+        println!("Updated #{id}: {new_text}");
+        Ok(())
+    } else {
+        Err(format!("Todo #{id} not found."))
+    }
+}
+
 pub fn cmd_category_add(store: &Store, name: &str) -> Result<(), String> {
     let lower = name.to_lowercase();
     if BUILTIN_CATEGORIES.contains(&lower.as_str()) {
@@ -102,6 +117,7 @@ pub fn print_usage() {
     eprintln!("  add [--cat <category>] <text>   Add a new todo");
     eprintln!("  list                             List all todos");
     eprintln!("  done <id>                        Mark a todo as done");
+    eprintln!("  edit <id> <new text>             Update the text of a todo");
     eprintln!("  remove <id>                      Remove a todo");
     eprintln!("  category add <name>              Add a custom category");
     eprintln!("  category list                    List all categories");
@@ -146,6 +162,16 @@ pub fn run_with_store(args: &[String], store: &Store) -> Result<(), String> {
                 .parse()
                 .map_err(|_| format!("Invalid id: {}", args[2]))?;
             cmd_done(store, id)
+        }
+        "edit" => {
+            if args.len() < 4 {
+                return Err("Usage: todo edit <id> <new text>".to_string());
+            }
+            let id: u32 = args[2]
+                .parse()
+                .map_err(|_| format!("Invalid id: {}", args[2]))?;
+            let new_text = args[3..].join(" ");
+            cmd_edit(store, id, &new_text)
         }
         "remove" => {
             if args.len() < 3 {

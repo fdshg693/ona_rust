@@ -223,4 +223,62 @@ fn invalid_id_parse_returns_error() {
     let store = Store::from_dir(_dir.path());
     assert!(run_with_store(&args(&["done", "abc"]), &store).is_err());
     assert!(run_with_store(&args(&["remove", "abc"]), &store).is_err());
+    assert!(run_with_store(&args(&["edit", "abc", "text"]), &store).is_err());
+}
+
+// ── edit command ─────────────────────────────────────────────────────────────
+
+#[test]
+fn edit_updates_todo_text() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["add", "Old text"]), &store).unwrap();
+    run_with_store(&args(&["edit", "1", "New text"]), &store).unwrap();
+    let todos = load_todos(&store).unwrap();
+    assert_eq!(todos[0].text, "New text");
+}
+
+#[test]
+fn edit_preserves_done_and_category() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["add", "--cat", "work", "Task"]), &store).unwrap();
+    run_with_store(&args(&["done", "1"]), &store).unwrap();
+    run_with_store(&args(&["edit", "1", "Updated task"]), &store).unwrap();
+    let todos = load_todos(&store).unwrap();
+    assert!(todos[0].done);
+    assert!(matches!(todos[0].category, Some(Category::Work)));
+    assert_eq!(todos[0].text, "Updated task");
+}
+
+#[test]
+fn edit_multiword_text() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["add", "Short"]), &store).unwrap();
+    run_with_store(&args(&["edit", "1", "Buy", "milk", "and", "eggs"]), &store).unwrap();
+    let todos = load_todos(&store).unwrap();
+    assert_eq!(todos[0].text, "Buy milk and eggs");
+}
+
+#[test]
+fn edit_nonexistent_id_returns_error() {
+    let (store, _dir) = temp_store();
+    let result = run_with_store(&args(&["edit", "99", "text"]), &store);
+    assert!(result.is_err());
+}
+
+#[test]
+fn edit_missing_args_returns_error() {
+    let (store, _dir) = temp_store();
+    assert!(run_with_store(&args(&["edit", "1"]), &store).is_err());
+    assert!(run_with_store(&args(&["edit"]), &store).is_err());
+}
+
+#[test]
+fn edit_empty_text_returns_error() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["add", "Task"]), &store).unwrap();
+    assert!(run_with_store(&args(&["edit", "1", ""]), &store).is_err());
+    assert!(run_with_store(&args(&["edit", "1", "   "]), &store).is_err());
+    // Original text must be unchanged
+    let todos = load_todos(&store).unwrap();
+    assert_eq!(todos[0].text, "Task");
 }
