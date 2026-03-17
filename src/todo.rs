@@ -1,5 +1,6 @@
 use crate::category::Category;
 use crate::storage::Store;
+use rusqlite::Transaction;
 
 #[derive(Clone)]
 pub struct Todo {
@@ -22,6 +23,19 @@ fn category_from_sql(s: Option<String>) -> Option<Category> {
         "health" => Category::Health,
         _ => Category::Custom(name),
     })
+}
+
+/// Run `body` inside a single transaction, committing on success.
+fn with_transaction<F>(store: &Store, body: F) -> Result<(), String>
+where
+    F: FnOnce(&Transaction) -> Result<(), String>,
+{
+    let mut conn = store.open()?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("begin transaction: {e}"))?;
+    body(&tx)?;
+    tx.commit().map_err(|e| format!("commit: {e}"))
 }
 
 pub fn load_todos(store: &Store) -> Result<Vec<Todo>, String> {
@@ -50,20 +64,20 @@ pub fn load_todos(store: &Store) -> Result<Vec<Todo>, String> {
 }
 
 pub fn save_todos(store: &Store, todos: &[Todo]) -> Result<(), String> {
-    let mut conn = store.open()?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("begin transaction: {e}"))?;
-    tx.execute("DELETE FROM todos", [])
-        .map_err(|e| format!("delete todos: {e}"))?;
-    for t in todos {
-        tx.execute(
-            "INSERT INTO todos (id, text, done, category) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![t.id, t.text, t.done, category_to_sql(&t.category)],
-        )
-        .map_err(|e| format!("insert todo: {e}"))?;
-    }
-    tx.commit().map_err(|e| format!("commit: {e}"))
+    // Clone to move into the closure; todos is a slice reference.
+    let todos: Vec<Todo> = todos.to_vec();
+    with_transaction(store, |tx| {
+        tx.execute("DELETE FROM todos", [])
+            .map_err(|e| format!("delete todos: {e}"))?;
+        for t in &todos {
+            tx.execute(
+                "INSERT INTO todos (id, text, done, category) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![t.id, t.text, t.done, category_to_sql(&t.category)],
+            )
+            .map_err(|e| format!("insert todo: {e}"))?;
+        }
+        Ok(())
+    })
 }
 
 pub fn load_custom_categories(store: &Store) -> Result<Vec<String>, String> {
@@ -82,20 +96,45 @@ pub fn load_custom_categories(store: &Store) -> Result<Vec<String>, String> {
 }
 
 pub fn save_custom_categories(store: &Store, cats: &[String]) -> Result<(), String> {
-    let mut conn = store.open()?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("begin transaction: {e}"))?;
-    tx.execute("DELETE FROM categories", [])
-        .map_err(|e| format!("delete categories: {e}"))?;
-    for name in cats {
+    let cats: Vec<String> = cats.to_vec();
+    with_transaction(store, |tx| {
+        tx.execute("DELETE FROM categories", [])
+            .map_err(|e| format!("delete categories: {e}"))?;
+        for name in &cats {
+            tx.execute(
+                "INSERT INTO categories (name) VALUES (?1)",
+                rusqlite::params![name],
+            )
+            .map_err(|e| format!("insert category: {e}"))?;
+        }
+        Ok(())
+    })
+}
+
+/// Set `category = NULL` on every todo whose category matches `name` (case-insensitive).
+pub fn clear_category_from_todos(store: &Store, name: &str) -> Result<(), String> {
+    let lower = name.to_lowercase();
+    with_transaction(store, |tx| {
         tx.execute(
-            "INSERT INTO categories (name) VALUES (?1)",
-            rusqlite::params![name],
+            "UPDATE todos SET category = NULL WHERE LOWER(category) = ?1",
+            rusqlite::params![lower],
         )
-        .map_err(|e| format!("insert category: {e}"))?;
-    }
-    tx.commit().map_err(|e| format!("commit: {e}"))
+        .map_err(|e| format!("clear category from todos: {e}"))?;
+        Ok(())
+    })
+}
+
+/// Replace the category string on every todo whose category matches `old_name` (case-insensitive).
+pub fn rename_category_in_todos(store: &Store, old_name: &str, new_name: &str) -> Result<(), String> {
+    let lower = old_name.to_lowercase();
+    with_transaction(store, |tx| {
+        tx.execute(
+            "UPDATE todos SET category = ?1 WHERE LOWER(category) = ?2",
+            rusqlite::params![new_name, lower],
+        )
+        .map_err(|e| format!("rename category in todos: {e}"))?;
+        Ok(())
+    })
 }
 
 pub fn next_id(todos: &[Todo]) -> Result<u32, String> {

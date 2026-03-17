@@ -228,6 +228,93 @@ fn category_add_builtin_name_returns_error() {
 }
 
 #[test]
+fn category_remove_deletes_category() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
+    run_with_store(&args(&["category", "remove", "hobby"]), &store).unwrap();
+    let cats = load_custom_categories(&store).unwrap();
+    assert!(cats.is_empty());
+}
+
+#[test]
+fn category_remove_nonexistent_returns_error() {
+    let (store, _dir) = temp_store();
+    let result = run_with_store(&args(&["category", "remove", "hobby"]), &store);
+    assert!(result.is_err());
+}
+
+#[test]
+fn category_remove_builtin_returns_error() {
+    let (store, _dir) = temp_store();
+    let result = run_with_store(&args(&["category", "remove", "work"]), &store);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("built-in"));
+}
+
+#[test]
+fn category_edit_renames_category() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
+    run_with_store(&args(&["category", "edit", "hobby", "crafts"]), &store).unwrap();
+    let cats = load_custom_categories(&store).unwrap();
+    assert!(cats.contains(&"crafts".to_string()));
+    assert!(!cats.contains(&"hobby".to_string()));
+}
+
+#[test]
+fn category_edit_nonexistent_returns_error() {
+    let (store, _dir) = temp_store();
+    let result = run_with_store(&args(&["category", "edit", "hobby", "crafts"]), &store);
+    assert!(result.is_err());
+}
+
+#[test]
+fn category_edit_builtin_returns_error() {
+    let (store, _dir) = temp_store();
+    let result = run_with_store(&args(&["category", "edit", "work", "jobs"]), &store);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("built-in"));
+}
+
+#[test]
+fn category_edit_to_existing_name_returns_error() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
+    run_with_store(&args(&["category", "add", "crafts"]), &store).unwrap();
+    let result = run_with_store(&args(&["category", "edit", "hobby", "crafts"]), &store);
+    assert!(result.is_err());
+}
+
+#[test]
+fn category_edit_to_builtin_name_returns_error() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
+    let result = run_with_store(&args(&["category", "edit", "hobby", "work"]), &store);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("built-in"));
+}
+
+#[test]
+fn category_remove_clears_category_on_todos() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
+    run_with_store(&args(&["add", "--cat", "hobby", "Paint"]), &store).unwrap();
+    run_with_store(&args(&["category", "remove", "hobby"]), &store).unwrap();
+    let todos = load_todos(&store).unwrap();
+    assert!(todos[0].category.is_none());
+}
+
+#[test]
+fn category_edit_updates_category_on_todos() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
+    run_with_store(&args(&["add", "--cat", "hobby", "Paint"]), &store).unwrap();
+    run_with_store(&args(&["category", "edit", "hobby", "crafts"]), &store).unwrap();
+    let todos = load_todos(&store).unwrap();
+    assert!(matches!(&todos[0].category, Some(Category::Custom(s)) if s == "crafts"));
+}
+
+#[test]
 fn invalid_id_parse_returns_error() {
     let _dir = TempDir::new().unwrap();
     let store = Store::from_dir(_dir.path());
