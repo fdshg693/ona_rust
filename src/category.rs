@@ -1,10 +1,8 @@
-use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const BUILTIN_CATEGORIES: &[&str] = &["work", "personal", "shopping", "health"];
 
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, PartialEq)]
 pub enum Category {
     Work,
     Personal,
@@ -34,12 +32,7 @@ pub fn parse_category(name: &str, custom_categories: &[String]) -> Result<Catego
         "shopping" => Ok(Category::Shopping),
         "health" => Ok(Category::Health),
         _ => {
-            if custom_categories.iter().any(|c| c.to_lowercase() == lower) {
-                // Preserve the casing stored in the custom categories list
-                let stored = custom_categories
-                    .iter()
-                    .find(|c| c.to_lowercase() == lower)
-                    .unwrap();
+            if let Some(stored) = custom_categories.iter().find(|c| c.to_lowercase() == lower) {
                 Ok(Category::Custom(stored.clone()))
             } else {
                 Err(format!("Unknown category: {name}"))

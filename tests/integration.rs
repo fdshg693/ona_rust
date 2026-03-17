@@ -126,6 +126,16 @@ fn add_todo_with_category() {
 }
 
 #[test]
+fn add_empty_text_returns_error() {
+    let (store, _dir) = temp_store();
+    assert!(run_with_store(&args(&["add", ""]), &store).is_err());
+    assert!(run_with_store(&args(&["add", "   "]), &store).is_err());
+    // No todos should have been created
+    let todos = load_todos(&store).unwrap();
+    assert!(todos.is_empty());
+}
+
+#[test]
 fn add_todo_with_unknown_category_fails() {
     let _dir = TempDir::new().unwrap();
     let store = Store::from_dir(_dir.path());
