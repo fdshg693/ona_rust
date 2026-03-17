@@ -1,5 +1,5 @@
 use ona_rust::category::{parse_category, Category};
-use ona_rust::cli::run_with_store;
+use ona_rust::cli::{cmd_list, run_with_store, PAGE_SIZE};
 use ona_rust::storage::Store;
 use ona_rust::todo::{load_custom_categories, load_todos, next_id};
 use tempfile::TempDir;
@@ -378,4 +378,66 @@ fn edit_empty_text_returns_error() {
     // Original text must be unchanged
     let todos = load_todos(&store).unwrap();
     assert_eq!(todos[0].text, "Task");
+}
+
+// ── list pagination ───────────────────────────────────────────────────────────
+
+#[test]
+fn list_page_one_of_one_succeeds() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["add", "Task"]), &store).unwrap();
+    assert!(cmd_list(&store, 1).is_ok());
+}
+
+#[test]
+fn list_page_zero_returns_error() {
+    let (store, _dir) = temp_store();
+    assert!(cmd_list(&store, 0).is_err());
+}
+
+#[test]
+fn list_page_out_of_range_returns_error() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["add", "Task"]), &store).unwrap();
+    // Only 1 todo → only 1 page
+    assert!(cmd_list(&store, 2).is_err());
+}
+
+#[test]
+fn list_page_flag_via_run_with_store() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["add", "Task"]), &store).unwrap();
+    assert!(run_with_store(&args(&["list", "--page", "1"]), &store).is_ok());
+}
+
+#[test]
+fn list_invalid_page_flag_returns_error() {
+    let (store, _dir) = temp_store();
+    assert!(run_with_store(&args(&["list", "--page", "abc"]), &store).is_err());
+}
+
+#[test]
+fn list_page_zero_via_flag_returns_error() {
+    let (store, _dir) = temp_store();
+    assert!(run_with_store(&args(&["list", "--page", "0"]), &store).is_err());
+}
+
+#[test]
+fn list_pagination_splits_correctly() {
+    let (store, _dir) = temp_store();
+    // Add PAGE_SIZE + 1 todos to force two pages
+    for i in 1..=(PAGE_SIZE + 1) {
+        run_with_store(&args(&["add", &format!("Task {i}")]), &store).unwrap();
+    }
+    assert!(cmd_list(&store, 1).is_ok());
+    assert!(cmd_list(&store, 2).is_ok());
+    // Page 3 does not exist
+    assert!(cmd_list(&store, 3).is_err());
+}
+
+#[test]
+fn list_empty_store_page_one_succeeds() {
+    let (store, _dir) = temp_store();
+    // Empty list: no todos, page 1 is still valid
+    assert!(cmd_list(&store, 1).is_ok());
 }
