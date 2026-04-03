@@ -1,3 +1,4 @@
+use crate::auth::{cmd_login, cmd_logout, cmd_register, require_auth};
 use crate::category::{parse_category, Category, BUILTIN_CATEGORIES};
 use crate::storage::Store;
 use crate::todo::{
@@ -277,9 +278,14 @@ pub fn cmd_category_list(store: &Store) -> Result<(), String> {
 pub fn print_usage() {
     eprintln!("Usage: todo <command> [args]");
     eprintln!();
-    eprintln!("Commands:");
-    eprintln!("  add [--cat <category>] <text>        Add a new todo");
-    eprintln!("  list [--page <n>]                      List todos (10 per page)");
+    eprintln!("Auth commands:");
+    eprintln!("  register <username> <password>        Create a new account and log in");
+    eprintln!("  login <username> <password>           Log in to an existing account");
+    eprintln!("  logout                                End the current session");
+    eprintln!();
+    eprintln!("Todo commands (require login):");
+    eprintln!("  add [--cat <category>] <text>         Add a new todo");
+    eprintln!("  list [--page <n>]                     List todos (10 per page)");
     eprintln!("  done <id>                             Mark a todo as done");
     eprintln!("  edit <id> <new text>                  Update the text of a todo");
     eprintln!("  remove <id>                           Remove a todo");
@@ -300,6 +306,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
 pub fn run_with_store(args: &[String], store: &Store) -> Result<(), String> {
     // Skip argv[0] (program name) and match on the remaining arguments.
     let argv: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+
+    // Auth commands do not require an active session.
+    match argv.as_slice() {
+        ["register", username, password] => return cmd_register(store, username, password),
+        ["register", ..] => {
+            return Err("Usage: todo register <username> <password>".to_string())
+        }
+        ["login", username, password] => return cmd_login(store, username, password),
+        ["login", ..] => return Err("Usage: todo login <username> <password>".to_string()),
+        ["logout"] => return cmd_logout(),
+        _ => {}
+    }
+
+    // All remaining commands require an active session.
+    require_auth()?;
 
     match argv.as_slice() {
         ["add", "--cat", cat, rest @ ..] if !rest.is_empty() => {

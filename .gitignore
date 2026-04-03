@@ -24,3 +24,7 @@ target
 # Added by cargo
 
 /target
+
+# OS-generated core dumps
+core
+core.*
