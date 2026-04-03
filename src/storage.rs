@@ -53,6 +53,11 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
         );
         CREATE TABLE IF NOT EXISTS categories (
             name TEXT PRIMARY KEY
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token      TEXT    PRIMARY KEY,
+            username   TEXT    NOT NULL,
+            expires_at INTEGER NOT NULL
         );",
     )
     .map_err(|e| format!("Failed to initialise schema: {e}"))

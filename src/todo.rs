@@ -1,8 +1,9 @@
 use crate::category::Category;
 use crate::storage::Store;
 use rusqlite::Transaction;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Todo {
     pub id: u32,
     pub text: String,
@@ -133,6 +134,62 @@ pub fn rename_category_in_todos(store: &Store, old_name: &str, new_name: &str) -
             rusqlite::params![new_name, lower],
         )
         .map_err(|e| format!("rename category in todos: {e}"))?;
+        Ok(())
+    })
+}
+
+/// Rename a custom category and update all referencing todos atomically.
+///
+/// `cats` is the already-updated categories list (old name replaced with new name).
+pub fn rename_category_atomic(
+    store: &Store,
+    cats: &[String],
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), String> {
+    let cats = cats.to_vec();
+    let old_lower = old_name.to_lowercase();
+    let new_name = new_name.to_string();
+    with_transaction(store, |tx| {
+        tx.execute("DELETE FROM categories", [])
+            .map_err(|e| format!("delete categories: {e}"))?;
+        for name in &cats {
+            tx.execute(
+                "INSERT INTO categories (name) VALUES (?1)",
+                rusqlite::params![name],
+            )
+            .map_err(|e| format!("insert category: {e}"))?;
+        }
+        tx.execute(
+            "UPDATE todos SET category = ?1 WHERE LOWER(category) = ?2",
+            rusqlite::params![new_name, old_lower],
+        )
+        .map_err(|e| format!("rename category in todos: {e}"))?;
+        Ok(())
+    })
+}
+
+/// Remove a custom category and clear it from all referencing todos atomically.
+///
+/// `cats` is the already-filtered categories list (target name removed).
+pub fn remove_category_atomic(store: &Store, cats: &[String], name: &str) -> Result<(), String> {
+    let cats = cats.to_vec();
+    let lower = name.to_lowercase();
+    with_transaction(store, |tx| {
+        tx.execute("DELETE FROM categories", [])
+            .map_err(|e| format!("delete categories: {e}"))?;
+        for cat in &cats {
+            tx.execute(
+                "INSERT INTO categories (name) VALUES (?1)",
+                rusqlite::params![cat],
+            )
+            .map_err(|e| format!("insert category: {e}"))?;
+        }
+        tx.execute(
+            "UPDATE todos SET category = NULL WHERE LOWER(category) = ?1",
+            rusqlite::params![lower],
+        )
+        .map_err(|e| format!("clear category from todos: {e}"))?;
         Ok(())
     })
 }
