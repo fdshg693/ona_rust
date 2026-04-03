@@ -7,12 +7,23 @@ edition = "2024"
 name = "todo"
 path = "src/main.rs"
 
+[[bin]]
+name = "todo-server"
+path = "src/api_main.rs"
+
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 crossterm = "0.28"
 bcrypt = "0.15"
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
