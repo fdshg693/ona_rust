@@ -38,7 +38,11 @@ impl Store {
     }
 }
 
+/// Current schema version. Increment this whenever a migration is added.
+const SCHEMA_VERSION: u32 = 2;
+
 fn init_schema(conn: &Connection) -> Result<(), String> {
+    // Create base tables (version 1).
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS users (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +53,8 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             id       INTEGER PRIMARY KEY,
             text     TEXT    NOT NULL,
             done     INTEGER NOT NULL DEFAULT 0,
-            category TEXT
+            category TEXT,
+            owner    TEXT
         );
         CREATE TABLE IF NOT EXISTS categories (
             name TEXT PRIMARY KEY
@@ -60,5 +65,29 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             expires_at INTEGER NOT NULL
         );",
     )
-    .map_err(|e| format!("Failed to initialise schema: {e}"))
+    .map_err(|e| format!("Failed to initialise schema: {e}"))?;
+
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|e| format!("Failed to read schema version: {e}"))?;
+
+    if version < 2 {
+        if version == 0 {
+            // version 0 means either a brand-new DB or a pre-versioning DB.
+            // Check whether the owner column already exists (new DB) before
+            // attempting the ALTER TABLE (pre-versioning DB).
+            let has_owner: bool = conn
+                .prepare("SELECT owner FROM todos LIMIT 0")
+                .is_ok();
+            if !has_owner {
+                // Pre-versioning DB: owner column is absent, add it.
+                conn.execute_batch("ALTER TABLE todos ADD COLUMN owner TEXT")
+                    .map_err(|e| format!("Migration v2 failed: {e}"))?;
+            }
+        }
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+            .map_err(|e| format!("Failed to set schema version: {e}"))?;
+    }
+
+    Ok(())
 }

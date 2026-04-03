@@ -2,7 +2,7 @@ use ona_rust::auth::{cmd_login, cmd_logout, cmd_register, read_session, set_sess
 use ona_rust::category::{parse_category, Category};
 use ona_rust::cli::{cmd_list, run_with_store, PAGE_SIZE};
 use ona_rust::storage::Store;
-use ona_rust::todo::{load_custom_categories, load_todos, next_id};
+use ona_rust::todo::{load_custom_categories, load_todos, next_id, save_todos, Todo};
 use tempfile::TempDir;
 
 fn args(parts: &[&str]) -> Vec<String> {
@@ -24,6 +24,11 @@ fn temp_store() -> (Store, TempDir) {
     // Register a test user so require_auth() succeeds.
     cmd_register(&store, "testuser", "testpass").unwrap();
     (store, dir)
+}
+
+fn load_todos_for_user(store: &Store, username: &str) -> Result<Vec<Todo>, String> {
+    let conn = store.open()?;
+    load_todos(&conn, username)
 }
 
 /// Helper: register a user and confirm the session is written.
@@ -78,7 +83,9 @@ fn parse_unknown_category_returns_error() {
 
 #[test]
 fn next_id_empty_list_returns_one() {
-    assert_eq!(next_id(&[]), Ok(1));
+    let (store, _dir) = temp_store();
+    let conn = store.open().unwrap();
+    assert_eq!(next_id(&conn), Ok(1));
 }
 
 #[test]
@@ -87,21 +94,24 @@ fn next_id_non_empty_returns_max_plus_one() {
     run_with_store(&args(&["add", "A"]), &store).unwrap();
     run_with_store(&args(&["add", "B"]), &store).unwrap();
     run_with_store(&args(&["add", "C"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let conn = store.open().unwrap();
     // ids are 1, 2, 3 — next should be 4
-    assert_eq!(next_id(&todos), Ok(4));
+    assert_eq!(next_id(&conn), Ok(4));
 }
 
 #[test]
 fn next_id_overflow_returns_error() {
-    use ona_rust::todo::Todo;
-    let todos = vec![Todo {
+    let (store, _dir) = temp_store();
+    let conn = store.open().unwrap();
+    let overflow = vec![Todo {
         id: u32::MAX,
         text: "overflow".to_string(),
         done: false,
         category: None,
+        owner: Some("testuser".to_string()),
     }];
-    assert!(next_id(&todos).is_err());
+    save_todos(&conn, &overflow).unwrap();
+    assert!(next_id(&conn).is_err());
 }
 
 // ── cli commands via run_with_store ──────────────────────────────────────────
@@ -110,7 +120,7 @@ fn next_id_overflow_returns_error() {
 fn add_and_list_todo() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Buy milk"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert_eq!(todos.len(), 1);
     assert_eq!(todos[0].text, "Buy milk");
     assert!(!todos[0].done);
@@ -122,7 +132,7 @@ fn add_multiple_todos_increments_id() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "First"]), &store).unwrap();
     run_with_store(&args(&["add", "Second"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert_eq!(todos[0].id, 1);
     assert_eq!(todos[1].id, 2);
 }
@@ -131,7 +141,7 @@ fn add_multiple_todos_increments_id() {
 fn add_todo_with_category() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "--cat", "work", "Write report"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert!(matches!(todos[0].category, Some(Category::Work)));
 }
 
@@ -141,7 +151,7 @@ fn add_empty_text_returns_error() {
     assert!(run_with_store(&args(&["add", ""]), &store).is_err());
     assert!(run_with_store(&args(&["add", "   "]), &store).is_err());
     // No todos should have been created
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert!(todos.is_empty());
 }
 
@@ -157,7 +167,7 @@ fn done_marks_todo_complete() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Task"]), &store).unwrap();
     run_with_store(&args(&["done", "1"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert!(todos[0].done);
 }
 
@@ -183,7 +193,7 @@ fn remove_deletes_todo() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Task"]), &store).unwrap();
     run_with_store(&args(&["remove", "1"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert!(todos.is_empty());
 }
 
@@ -209,7 +219,7 @@ fn category_add_and_use() {
 
     // Can now use the custom category when adding a todo
     run_with_store(&args(&["add", "--cat", "hobby", "Paint"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert!(matches!(&todos[0].category, Some(Category::Custom(s)) if s == "hobby"));
 }
 
@@ -301,7 +311,7 @@ fn category_remove_clears_category_on_todos() {
     run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
     run_with_store(&args(&["add", "--cat", "hobby", "Paint"]), &store).unwrap();
     run_with_store(&args(&["category", "remove", "hobby"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert!(todos[0].category.is_none());
 }
 
@@ -311,7 +321,7 @@ fn category_edit_updates_category_on_todos() {
     run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
     run_with_store(&args(&["add", "--cat", "hobby", "Paint"]), &store).unwrap();
     run_with_store(&args(&["category", "edit", "hobby", "crafts"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert!(matches!(&todos[0].category, Some(Category::Custom(s)) if s == "crafts"));
 }
 
@@ -330,7 +340,7 @@ fn edit_updates_todo_text() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Old text"]), &store).unwrap();
     run_with_store(&args(&["edit", "1", "New text"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert_eq!(todos[0].text, "New text");
 }
 
@@ -340,7 +350,7 @@ fn edit_preserves_done_and_category() {
     run_with_store(&args(&["add", "--cat", "work", "Task"]), &store).unwrap();
     run_with_store(&args(&["done", "1"]), &store).unwrap();
     run_with_store(&args(&["edit", "1", "Updated task"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert!(todos[0].done);
     assert!(matches!(todos[0].category, Some(Category::Work)));
     assert_eq!(todos[0].text, "Updated task");
@@ -351,7 +361,7 @@ fn edit_multiword_text() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Short"]), &store).unwrap();
     run_with_store(&args(&["edit", "1", "Buy", "milk", "and", "eggs"]), &store).unwrap();
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert_eq!(todos[0].text, "Buy milk and eggs");
 }
 
@@ -376,7 +386,7 @@ fn edit_empty_text_returns_error() {
     assert!(run_with_store(&args(&["edit", "1", ""]), &store).is_err());
     assert!(run_with_store(&args(&["edit", "1", "   "]), &store).is_err());
     // Original text must be unchanged
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "testuser").unwrap();
     assert_eq!(todos[0].text, "Task");
 }
 
@@ -386,13 +396,13 @@ fn edit_empty_text_returns_error() {
 fn list_page_one_of_one_succeeds() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Task"]), &store).unwrap();
-    assert!(cmd_list(&store, 1).is_ok());
+    assert!(cmd_list(&store, "testuser", 1).is_ok());
 }
 
 #[test]
 fn list_page_zero_returns_error() {
     let (store, _dir) = temp_store();
-    assert!(cmd_list(&store, 0).is_err());
+    assert!(cmd_list(&store, "testuser", 0).is_err());
 }
 
 #[test]
@@ -400,7 +410,7 @@ fn list_page_out_of_range_returns_error() {
     let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Task"]), &store).unwrap();
     // Only 1 todo → only 1 page
-    assert!(cmd_list(&store, 2).is_err());
+    assert!(cmd_list(&store, "testuser", 2).is_err());
 }
 
 #[test]
@@ -429,17 +439,17 @@ fn list_pagination_splits_correctly() {
     for i in 1..=(PAGE_SIZE + 1) {
         run_with_store(&args(&["add", &format!("Task {i}")]), &store).unwrap();
     }
-    assert!(cmd_list(&store, 1).is_ok());
-    assert!(cmd_list(&store, 2).is_ok());
+    assert!(cmd_list(&store, "testuser", 1).is_ok());
+    assert!(cmd_list(&store, "testuser", 2).is_ok());
     // Page 3 does not exist
-    assert!(cmd_list(&store, 3).is_err());
+    assert!(cmd_list(&store, "testuser", 3).is_err());
 }
 
 #[test]
 fn list_empty_store_page_one_succeeds() {
     let (store, _dir) = temp_store();
     // Empty list: no todos, page 1 is still valid
-    assert!(cmd_list(&store, 1).is_ok());
+    assert!(cmd_list(&store, "testuser", 1).is_ok());
 }
 
 // ── auth commands ─────────────────────────────────────────────────────────────
@@ -585,7 +595,7 @@ fn todo_commands_work_after_login() {
     register_user(&store, "eve", "pass");
     run_with_store(&args(&["add", "My task"]), &store).unwrap();
 
-    let todos = load_todos(&store).unwrap();
+    let todos = load_todos_for_user(&store, "eve").unwrap();
     assert_eq!(todos.len(), 1);
     assert_eq!(todos[0].text, "My task");
 }
@@ -601,4 +611,70 @@ fn register_and_login_commands_via_run_with_store() {
     run_with_store(&args(&["login", "frank", "pass"]), &store).unwrap();
 
     assert_eq!(read_session().unwrap(), "frank");
+}
+
+// ── multi-user isolation ─────────────────────────────────────────────────────
+
+#[test]
+fn two_users_see_own_todos_not_each_others() {
+    let (store, _dir) = temp_store();
+    cmd_register(&store, "otheruser", "otherpass").unwrap();
+    cmd_login(&store, "testuser", "testpass").unwrap();
+    run_with_store(&args(&["add", "testuser todo"]), &store).unwrap();
+    cmd_login(&store, "otheruser", "otherpass").unwrap();
+    run_with_store(&args(&["add", "otheruser todo"]), &store).unwrap();
+
+    let testuser_todos = load_todos_for_user(&store, "testuser").unwrap();
+    assert_eq!(testuser_todos.len(), 1);
+    assert_eq!(testuser_todos[0].text, "testuser todo");
+
+    let otheruser_todos = load_todos_for_user(&store, "otheruser").unwrap();
+    assert_eq!(otheruser_todos.len(), 1);
+    assert_eq!(otheruser_todos[0].text, "otheruser todo");
+}
+
+#[test]
+fn shared_todo_visible_to_all_users() {
+    let (store, _dir) = temp_store();
+    cmd_register(&store, "otheruser", "otherpass").unwrap();
+    let conn = store.open().unwrap();
+    conn
+        .execute(
+            "INSERT INTO todos (id, text, done, owner) VALUES (1, 'shared task', 0, NULL)",
+            [],
+        )
+        .unwrap();
+
+    let testuser_todos = load_todos_for_user(&store, "testuser").unwrap();
+    assert!(
+        testuser_todos.iter().any(|t| t.text == "shared task"),
+        "testuser should see shared todo"
+    );
+
+    let otheruser_todos = load_todos_for_user(&store, "otheruser").unwrap();
+    assert!(
+        otheruser_todos.iter().any(|t| t.text == "shared task"),
+        "otheruser should see shared todo"
+    );
+}
+
+#[test]
+fn done_command_scoped_to_user() {
+    let (store, _dir) = temp_store();
+    run_with_store(&args(&["add", "testuser task"]), &store).unwrap();
+    cmd_register(&store, "otheruser", "otherpass").unwrap();
+    run_with_store(&args(&["add", "otheruser task"]), &store).unwrap();
+    cmd_login(&store, "testuser", "testpass").unwrap();
+    run_with_store(&args(&["done", "1"]), &store).unwrap();
+
+    let testuser_todos = load_todos_for_user(&store, "testuser").unwrap();
+    let t1 = testuser_todos.iter().find(|t| t.id == 1).expect("testuser todo id 1");
+    assert!(t1.done);
+
+    let otheruser_todos = load_todos_for_user(&store, "otheruser").unwrap();
+    let t2 = otheruser_todos
+        .iter()
+        .find(|t| t.id == 2)
+        .expect("otheruser todo id 2");
+    assert!(!t2.done);
 }

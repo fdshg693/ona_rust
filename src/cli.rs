@@ -2,7 +2,7 @@ use crate::auth::{cmd_login, cmd_logout, cmd_register, require_auth};
 use crate::category::{parse_category, Category, BUILTIN_CATEGORIES};
 use crate::storage::Store;
 use crate::todo::{
-    clear_category_from_todos, load_custom_categories, load_todos, next_id,
+    clear_category_from_todos, delete_todo, insert_todo, load_custom_categories, load_todos,
     rename_category_in_todos, save_custom_categories, save_todos, Todo,
 };
 use crossterm::{
@@ -14,21 +14,20 @@ use crossterm::{
 };
 use std::io::{stdout, Write};
 
-pub fn cmd_add(store: &Store, text: &str, category: Option<Category>) -> Result<(), String> {
+pub fn cmd_add(
+    store: &Store,
+    username: &str,
+    text: &str,
+    category: Option<Category>,
+) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("Todo text cannot be empty.".to_string());
     }
-    let mut todos = load_todos(store)?;
-    let id = next_id(&todos)?;
-    todos.push(Todo {
-        id,
-        text: text.to_string(),
-        done: false,
-        category: category.clone(),
-    });
-    save_todos(store, &todos)?;
-    match category {
-        Some(cat) => println!("Added todo #{id} [{cat}]: {text}"),
+    let conn = store.open()?;
+    let todo = insert_todo(&conn, text.to_string(), category, Some(username.to_string()))?;
+    let id = todo.id;
+    match todo.category {
+        Some(ref cat) => println!("Added todo #{id} [{cat}]: {text}"),
         None => println!("Added todo #{id}: {text}"),
     }
     Ok(())
@@ -36,11 +35,12 @@ pub fn cmd_add(store: &Store, text: &str, category: Option<Category>) -> Result<
 
 pub const PAGE_SIZE: usize = 10;
 
-pub fn cmd_list(store: &Store, page: usize) -> Result<(), String> {
+pub fn cmd_list(store: &Store, username: &str, page: usize) -> Result<(), String> {
     if page == 0 {
         return Err("Page number must be 1 or greater.".to_string());
     }
-    let todos = load_todos(store)?;
+    let conn = store.open()?;
+    let todos = load_todos(&conn, username)?;
     if todos.is_empty() {
         println!("No todos.");
         return Ok(());
@@ -95,8 +95,9 @@ fn render_page(todos: &[Todo], page: usize, total_pages: usize) -> Result<(), St
 }
 
 /// Interactive pager: left/right arrows navigate pages, q/Esc/Enter exits.
-pub fn cmd_list_interactive(store: &Store) -> Result<(), String> {
-    let todos = load_todos(store)?;
+pub fn cmd_list_interactive(store: &Store, username: &str) -> Result<(), String> {
+    let conn = store.open()?;
+    let todos = load_todos(&conn, username)?;
     if todos.is_empty() {
         println!("No todos.");
         return Ok(());
@@ -104,7 +105,7 @@ pub fn cmd_list_interactive(store: &Store) -> Result<(), String> {
     let total_pages = todos.len().div_ceil(PAGE_SIZE);
     // Non-interactive: skip raw mode when there is only one page.
     if total_pages == 1 {
-        return cmd_list(store, 1);
+        return cmd_list(store, username, 1);
     }
 
     let mut page: usize = 1;
@@ -154,14 +155,18 @@ pub fn cmd_list_interactive(store: &Store) -> Result<(), String> {
     result.or(cleanup)
 }
 
-pub fn cmd_done(store: &Store, id: u32) -> Result<(), String> {
-    let mut todos = load_todos(store)?;
+pub fn cmd_done(store: &Store, username: &str, id: u32) -> Result<(), String> {
+    let conn = store.open()?;
+    let mut todos = load_todos(&conn, username)?;
     if let Some(t) = todos.iter_mut().find(|t| t.id == id) {
+        if t.owner.as_deref() != Some(username) {
+            return Err(format!("Todo #{id} is not owned by you."));
+        }
         if t.done {
             return Err(format!("Todo #{id} is already done."));
         }
         t.done = true;
-        save_todos(store, &todos)?;
+        save_todos(&conn, &todos)?;
         println!("Marked #{id} as done.");
         Ok(())
     } else {
@@ -169,26 +174,31 @@ pub fn cmd_done(store: &Store, id: u32) -> Result<(), String> {
     }
 }
 
-pub fn cmd_remove(store: &Store, id: u32) -> Result<(), String> {
-    let mut todos = load_todos(store)?;
-    let len = todos.len();
-    todos.retain(|t| t.id != id);
-    if todos.len() == len {
-        return Err(format!("Todo #{id} not found."));
+pub fn cmd_remove(store: &Store, username: &str, id: u32) -> Result<(), String> {
+    let conn = store.open()?;
+    let todos = load_todos(&conn, username)?;
+    let todo = todos.iter().find(|t| t.id == id)
+        .ok_or_else(|| format!("Todo #{id} not found."))?;
+    if todo.owner.as_deref() != Some(username) {
+        return Err(format!("Todo #{id} is not owned by you."));
     }
-    save_todos(store, &todos)?;
+    delete_todo(&conn, id)?;
     println!("Removed #{id}.");
     Ok(())
 }
 
-pub fn cmd_edit(store: &Store, id: u32, new_text: &str) -> Result<(), String> {
+pub fn cmd_edit(store: &Store, username: &str, id: u32, new_text: &str) -> Result<(), String> {
     if new_text.trim().is_empty() {
         return Err("Todo text cannot be empty.".to_string());
     }
-    let mut todos = load_todos(store)?;
+    let conn = store.open()?;
+    let mut todos = load_todos(&conn, username)?;
     if let Some(t) = todos.iter_mut().find(|t| t.id == id) {
+        if t.owner.as_deref() != Some(username) {
+            return Err(format!("Todo #{id} is not owned by you."));
+        }
         t.text = new_text.to_string();
-        save_todos(store, &todos)?;
+        save_todos(&conn, &todos)?;
         println!("Updated #{id}: {new_text}");
         Ok(())
     } else {
@@ -320,7 +330,7 @@ pub fn run_with_store(args: &[String], store: &Store) -> Result<(), String> {
     }
 
     // All remaining commands require an active session.
-    require_auth()?;
+    let username = require_auth()?;
 
     match argv.as_slice() {
         ["add", "--cat", cat, rest @ ..] if !rest.is_empty() => {
@@ -328,26 +338,26 @@ pub fn run_with_store(args: &[String], store: &Store) -> Result<(), String> {
             let category = parse_category(cat, &custom_cats).map_err(|e| {
                 format!("{e}\nUse 'todo category list' to see available categories.")
             })?;
-            cmd_add(store, &rest.join(" "), Some(category))
+            cmd_add(store, &username, &rest.join(" "), Some(category))
         }
         ["add", "--cat", ..] => Err("Usage: todo add --cat <category> <text>".to_string()),
-        ["add", rest @ ..] if !rest.is_empty() => cmd_add(store, &rest.join(" "), None),
+        ["add", rest @ ..] if !rest.is_empty() => cmd_add(store, &username, &rest.join(" "), None),
         ["add"] => Err("Usage: todo add [--cat <category>] <text>".to_string()),
-        ["list"] => cmd_list_interactive(store),
+        ["list"] => cmd_list_interactive(store, &username),
         ["list", "--page", page_str] => {
             let page: usize = page_str
                 .parse()
                 .map_err(|_| format!("Invalid page number: {page_str}"))?;
-            cmd_list(store, page)
+            cmd_list(store, &username, page)
         }
         ["list", ..] => Err("Usage: todo list [--page <n>]".to_string()),
-        ["done", id_str] => cmd_done(store, parse_id(id_str)?),
+        ["done", id_str] => cmd_done(store, &username, parse_id(id_str)?),
         ["done", ..] => Err("Usage: todo done <id>".to_string()),
         ["edit", id_str, rest @ ..] if !rest.is_empty() => {
-            cmd_edit(store, parse_id(id_str)?, &rest.join(" "))
+            cmd_edit(store, &username, parse_id(id_str)?, &rest.join(" "))
         }
         ["edit", ..] => Err("Usage: todo edit <id> <new text>".to_string()),
-        ["remove", id_str] => cmd_remove(store, parse_id(id_str)?),
+        ["remove", id_str] => cmd_remove(store, &username, parse_id(id_str)?),
         ["remove", ..] => Err("Usage: todo remove <id>".to_string()),
         ["category", "add", name] => cmd_category_add(store, name),
         ["category", "add", ..] => Err("Usage: todo category add <name>".to_string()),
