@@ -3,8 +3,8 @@ use crate::api::state::AppState;
 use crate::category::parse_category;
 use crate::cli::PAGE_SIZE;
 use crate::todo::{
-    load_custom_categories, load_todos, next_id, remove_category_atomic, rename_category_atomic,
-    save_custom_categories, save_todos, Todo,
+    delete_todo, insert_todo, load_custom_categories, load_todos, remove_category_atomic,
+    rename_category_atomic, save_custom_categories, save_todos, Todo,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -32,6 +32,10 @@ fn bad_request(msg: String) -> (StatusCode, String) {
 
 fn conflict(msg: String) -> (StatusCode, String) {
     (StatusCode::CONFLICT, msg)
+}
+
+fn forbidden(msg: String) -> (StatusCode, String) {
+    (StatusCode::FORBIDDEN, msg)
 }
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -80,7 +84,7 @@ pub struct CategoriesResponse {
 /// `GET /todos?page=<n>` — list todos, 10 per page (default page 1).
 pub async fn list_todos(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Query(q): Query<PageQuery>,
 ) -> impl IntoResponse {
     let page = q.page.unwrap_or(1);
@@ -88,7 +92,11 @@ pub async fn list_todos(
         return bad_request("Page number must be 1 or greater.".to_string()).into_response();
     }
 
-    let todos = match load_todos(&state.store) {
+    let conn = match state.store.open() {
+        Ok(c) => c,
+        Err(e) => return internal(e).into_response(),
+    };
+    let todos = match load_todos(&conn, &user) {
         Ok(t) => t,
         Err(e) => return internal(e).into_response(),
     };
@@ -114,7 +122,7 @@ pub async fn list_todos(
 /// `POST /todos` — add a new todo.
 pub async fn add_todo(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Json(body): Json<AddTodoRequest>,
 ) -> impl IntoResponse {
     if body.text.trim().is_empty() {
@@ -135,26 +143,13 @@ pub async fn add_todo(
         None => None,
     };
 
-    let mut todos = match load_todos(store) {
-        Ok(t) => t,
+    let conn = match store.open() {
+        Ok(c) => c,
         Err(e) => return internal(e).into_response(),
     };
 
-    let id = match next_id(&todos) {
-        Ok(id) => id,
-        Err(e) => return internal(e).into_response(),
-    };
-
-    let todo = Todo {
-        id,
-        text: body.text.clone(),
-        done: false,
-        category,
-    };
-    todos.push(todo.clone());
-
-    match save_todos(store, &todos) {
-        Ok(()) => (StatusCode::CREATED, Json(todo)).into_response(),
+    match insert_todo(&conn, body.text.clone(), category, Some(user)) {
+        Ok(todo) => (StatusCode::CREATED, Json(todo)).into_response(),
         Err(e) => internal(e).into_response(),
     }
 }
@@ -162,24 +157,31 @@ pub async fn add_todo(
 /// `PATCH /todos/:id/done` — mark a todo as done.
 pub async fn mark_done(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Path(id): Path<u32>,
 ) -> impl IntoResponse {
     let store = &state.store;
-    let mut todos = match load_todos(store) {
+    let conn = match store.open() {
+        Ok(c) => c,
+        Err(e) => return internal(e).into_response(),
+    };
+    let mut todos = match load_todos(&conn, &user) {
         Ok(t) => t,
         Err(e) => return internal(e).into_response(),
     };
 
     match todos.iter_mut().find(|t| t.id == id) {
         None => not_found(format!("Todo #{id} not found.")).into_response(),
+        Some(t) if t.owner.as_deref() != Some(user.as_str()) => {
+            forbidden(format!("Todo #{id} is not owned by you.")).into_response()
+        }
         Some(t) if t.done => {
             bad_request(format!("Todo #{id} is already done.")).into_response()
         }
         Some(t) => {
             t.done = true;
             let updated = t.clone();
-            match save_todos(store, &todos) {
+            match save_todos(&conn, &todos) {
                 Ok(()) => Json(updated).into_response(),
                 Err(e) => internal(e).into_response(),
             }
@@ -190,7 +192,7 @@ pub async fn mark_done(
 /// `PUT /todos/:id` — update the text of a todo.
 pub async fn edit_todo(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Path(id): Path<u32>,
     Json(body): Json<EditTodoRequest>,
 ) -> impl IntoResponse {
@@ -199,17 +201,24 @@ pub async fn edit_todo(
     }
 
     let store = &state.store;
-    let mut todos = match load_todos(store) {
+    let conn = match store.open() {
+        Ok(c) => c,
+        Err(e) => return internal(e).into_response(),
+    };
+    let mut todos = match load_todos(&conn, &user) {
         Ok(t) => t,
         Err(e) => return internal(e).into_response(),
     };
 
     match todos.iter_mut().find(|t| t.id == id) {
         None => not_found(format!("Todo #{id} not found.")).into_response(),
+        Some(t) if t.owner.as_deref() != Some(user.as_str()) => {
+            forbidden(format!("Todo #{id} is not owned by you.")).into_response()
+        }
         Some(t) => {
             t.text = body.text.clone();
             let updated = t.clone();
-            match save_todos(store, &todos) {
+            match save_todos(&conn, &todos) {
                 Ok(()) => Json(updated).into_response(),
                 Err(e) => internal(e).into_response(),
             }
@@ -220,24 +229,28 @@ pub async fn edit_todo(
 /// `DELETE /todos/:id` — remove a todo.
 pub async fn remove_todo(
     State(state): State<AppState>,
-    AuthUser(_user): AuthUser,
+    AuthUser(user): AuthUser,
     Path(id): Path<u32>,
 ) -> impl IntoResponse {
     let store = &state.store;
-    let mut todos = match load_todos(store) {
+    let conn = match store.open() {
+        Ok(c) => c,
+        Err(e) => return internal(e).into_response(),
+    };
+    let todos = match load_todos(&conn, &user) {
         Ok(t) => t,
         Err(e) => return internal(e).into_response(),
     };
 
-    let len = todos.len();
-    todos.retain(|t| t.id != id);
-    if todos.len() == len {
-        return not_found(format!("Todo #{id} not found.")).into_response();
-    }
-
-    match save_todos(store, &todos) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => internal(e).into_response(),
+    match todos.iter().find(|t| t.id == id) {
+        None => not_found(format!("Todo #{id} not found.")).into_response(),
+        Some(t) if t.owner.as_deref() != Some(user.as_str()) => {
+            forbidden(format!("Todo #{id} is not owned by you.")).into_response()
+        }
+        Some(_) => match delete_todo(&conn, id) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => internal(e).into_response(),
+        },
     }
 }
 

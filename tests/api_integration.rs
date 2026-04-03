@@ -550,6 +550,114 @@ async fn invalid_token_returns_401() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+// ── Multi-user isolation tests ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn api_two_users_cannot_see_each_others_todos() {
+    let dir = TempDir::new().unwrap();
+    let app = make_app(&dir);
+    let token_a = register_and_token(app.clone(), "alice", "pass1").await;
+    let token_b = register_and_token(app.clone(), "bob", "pass2").await;
+
+    let (status, _) = post_json_auth(
+        app.clone(),
+        "/todos",
+        &token_a,
+        json!({ "text": "alice task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = post_json_auth(
+        app.clone(),
+        "/todos",
+        &token_b,
+        json!({ "text": "bob task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = get_auth(app.clone(), "/todos", &token_a).await;
+    assert_eq!(status, StatusCode::OK);
+    let page = body_json(body).await;
+    let todos_a = page["todos"].as_array().unwrap();
+    assert_eq!(todos_a.len(), 1);
+    assert_eq!(todos_a[0]["text"], "alice task");
+
+    let (status, body) = get_auth(app, "/todos", &token_b).await;
+    assert_eq!(status, StatusCode::OK);
+    let page = body_json(body).await;
+    let todos_b = page["todos"].as_array().unwrap();
+    assert_eq!(todos_b.len(), 1);
+    assert_eq!(todos_b[0]["text"], "bob task");
+}
+
+#[tokio::test]
+async fn api_shared_todo_visible_to_all_users() {
+    let dir = TempDir::new().unwrap();
+    let app = make_app(&dir);
+    let token_a = register_and_token(app.clone(), "alice", "pass1").await;
+    let token_b = register_and_token(app.clone(), "bob", "pass2").await;
+
+    Store::from_dir(dir.path())
+        .open()
+        .unwrap()
+        .execute(
+            "INSERT INTO todos (id, text, done, owner) VALUES (1, 'shared', 0, NULL)",
+            [],
+        )
+        .unwrap();
+
+    for token in [&token_a, &token_b] {
+        let (status, body) = get_auth(app.clone(), "/todos", token).await;
+        assert_eq!(status, StatusCode::OK);
+        let page = body_json(body).await;
+        let texts: Vec<&str> = page["todos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["text"].as_str())
+            .collect();
+        assert!(
+            texts.contains(&"shared"),
+            "expected 'shared' in {:?}",
+            texts
+        );
+    }
+}
+
+#[tokio::test]
+async fn api_user_cannot_see_other_users_todo_by_id() {
+    let dir = TempDir::new().unwrap();
+    let app = make_app(&dir);
+    let token_a = register_and_token(app.clone(), "alice", "pass1").await;
+    let token_b = register_and_token(app.clone(), "bob", "pass2").await;
+
+    let (status, body) = post_json_auth(
+        app.clone(),
+        "/todos",
+        &token_a,
+        json!({ "text": "alice only" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body_json(body).await["id"].as_u64().unwrap();
+
+    let (status, body) = get_auth(app.clone(), "/todos", &token_b).await;
+    assert_eq!(status, StatusCode::OK);
+    let page = body_json(body).await;
+    assert_eq!(page["todos"].as_array().unwrap().len(), 0);
+
+    let req = Request::builder()
+        .method(Method::PATCH)
+        .uri(format!("/todos/{id}/done"))
+        .header(header::AUTHORIZATION, format!("Bearer {token_b}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 // Suppress unused warning for body_text helper (available for debugging)
 #[allow(dead_code)]
 fn _use_body_text() {

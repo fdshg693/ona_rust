@@ -1,6 +1,6 @@
-use crate::category::Category;
+use crate::category::{parse_category, Category};
 use crate::storage::Store;
-use rusqlite::Transaction;
+use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -9,21 +9,12 @@ pub struct Todo {
     pub text: String,
     pub done: bool,
     pub category: Option<Category>,
+    pub owner: Option<String>,
 }
 
 // Category is stored as its Display string; NULL means no category.
 fn category_to_sql(cat: &Option<Category>) -> Option<String> {
     cat.as_ref().map(|c| c.to_string())
-}
-
-fn category_from_sql(s: Option<String>) -> Option<Category> {
-    s.map(|name| match name.to_lowercase().as_str() {
-        "work" => Category::Work,
-        "personal" => Category::Personal,
-        "shopping" => Category::Shopping,
-        "health" => Category::Health,
-        _ => Category::Custom(name),
-    })
 }
 
 /// Run `body` inside a single transaction, committing on success.
@@ -39,46 +30,80 @@ where
     tx.commit().map_err(|e| format!("commit: {e}"))
 }
 
-pub fn load_todos(store: &Store) -> Result<Vec<Todo>, String> {
-    let conn = store.open()?;
+pub fn load_todos(conn: &Connection, username: &str) -> Result<Vec<Todo>, String> {
+    let custom_cats: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT name FROM categories ORDER BY name")
+            .map_err(|e| format!("prepare categories: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("query categories: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row: {e}"))?
+    };
+
     let mut stmt = conn
-        .prepare("SELECT id, text, done, category FROM todos ORDER BY id")
+        .prepare(
+            "SELECT id, text, done, category, owner FROM todos \
+             WHERE owner IS NULL OR owner = ?1 ORDER BY id",
+        )
         .map_err(|e| format!("prepare: {e}"))?;
 
-    let todos = stmt
-        .query_map([], |row| {
-            Ok(Todo {
-                id: row.get::<_, u32>(0)?,
-                text: row.get::<_, String>(1)?,
-                done: row.get::<_, bool>(2)?,
-                category: {
-                    let s: Option<String> = row.get(3)?;
-                    Ok::<_, rusqlite::Error>(category_from_sql(s))
-                }?,
-            })
-        })
-        .map_err(|e| format!("query: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("row: {e}"))?;
+    let mut rows = stmt
+        .query(rusqlite::params![username])
+        .map_err(|e| format!("query: {e}"))?;
+
+    let mut todos = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| format!("row: {e}"))?
+    {
+        let id: u32 = row.get(0).map_err(|e| format!("row: {e}"))?;
+        let text: String = row.get(1).map_err(|e| format!("row: {e}"))?;
+        let done: bool = row.get(2).map_err(|e| format!("row: {e}"))?;
+        let cat_opt: Option<String> = row.get(3).map_err(|e| format!("row: {e}"))?;
+        let category = match cat_opt {
+            None => None,
+            Some(ref s) => Some(parse_category(s, &custom_cats)?),
+        };
+        let owner: Option<String> = row.get(4).map_err(|e| format!("row: {e}"))?;
+        todos.push(Todo {
+            id,
+            text,
+            done,
+            category,
+            owner,
+        });
+    }
 
     Ok(todos)
 }
 
-pub fn save_todos(store: &Store, todos: &[Todo]) -> Result<(), String> {
-    // Clone to move into the closure; todos is a slice reference.
-    let todos: Vec<Todo> = todos.to_vec();
-    with_transaction(store, |tx| {
-        tx.execute("DELETE FROM todos", [])
-            .map_err(|e| format!("delete todos: {e}"))?;
-        for t in &todos {
-            tx.execute(
-                "INSERT INTO todos (id, text, done, category) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![t.id, t.text, t.done, category_to_sql(&t.category)],
-            )
-            .map_err(|e| format!("insert todo: {e}"))?;
-        }
-        Ok(())
-    })
+pub fn save_todos(conn: &Connection, todos: &[Todo]) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("begin transaction: {e}"))?;
+    for t in todos {
+        tx.execute(
+            "INSERT OR REPLACE INTO todos (id, text, done, category, owner) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                t.id,
+                t.text,
+                t.done,
+                category_to_sql(&t.category),
+                t.owner,
+            ],
+        )
+        .map_err(|e| format!("upsert todo: {e}"))?;
+    }
+    tx.commit().map_err(|e| format!("commit: {e}"))
+}
+
+/// Remove a single todo row by primary key (ids are unique across the table).
+pub fn delete_todo(conn: &Connection, id: u32) -> Result<(), String> {
+    conn.execute("DELETE FROM todos WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| format!("delete todo: {e}"))?;
+    Ok(())
 }
 
 pub fn load_custom_categories(store: &Store) -> Result<Vec<String>, String> {
@@ -194,8 +219,56 @@ pub fn remove_category_atomic(store: &Store, cats: &[String], name: &str) -> Res
     })
 }
 
-pub fn next_id(todos: &[Todo]) -> Result<u32, String> {
-    let max = todos.iter().map(|t| t.id).max().unwrap_or(0);
-    max.checked_add(1)
+/// Return the next available todo ID (global max + 1).
+///
+/// Exposed for tests. Production code should use `insert_todo`, which
+/// assigns the ID atomically inside a `BEGIN IMMEDIATE` transaction.
+pub fn next_id(conn: &Connection) -> Result<u32, String> {
+    let max: Option<u32> = conn
+        .query_row("SELECT MAX(id) FROM todos", [], |row| row.get(0))
+        .map_err(|e| format!("next_id: {e}"))?;
+    max.unwrap_or(0)
+        .checked_add(1)
         .ok_or_else(|| "todo id overflow: too many todos".to_string())
+}
+
+/// Insert a new todo atomically, assigning the next available ID inside a
+/// single `BEGIN IMMEDIATE` transaction to prevent concurrent writers from
+/// claiming the same ID.
+///
+/// Returns the inserted `Todo` (with its assigned `id`).
+pub fn insert_todo(conn: &Connection, text: String, category: Option<Category>, owner: Option<String>) -> Result<Todo, String> {
+    // BEGIN IMMEDIATE acquires a write lock immediately, blocking other writers
+    // for the duration of this transaction.
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("begin immediate: {e}"))?;
+
+    let result = (|| -> Result<Todo, String> {
+        let max: Option<u32> = conn
+            .query_row("SELECT MAX(id) FROM todos", [], |row| row.get(0))
+            .map_err(|e| format!("next_id: {e}"))?;
+        let id = max
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| "todo id overflow: too many todos".to_string())?;
+
+        conn.execute(
+            "INSERT INTO todos (id, text, done, category, owner) VALUES (?1, ?2, 0, ?3, ?4)",
+            rusqlite::params![id, text, category_to_sql(&category), owner],
+        )
+        .map_err(|e| format!("insert todo: {e}"))?;
+
+        Ok(Todo { id, text, done: false, category, owner })
+    })();
+
+    match result {
+        Ok(todo) => {
+            conn.execute_batch("COMMIT").map_err(|e| format!("commit: {e}"))?;
+            Ok(todo)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
