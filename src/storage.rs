@@ -40,7 +40,12 @@ impl Store {
 
 fn init_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS todos (
+        "CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT    NOT NULL UNIQUE,
+            password_hash TEXT    NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS todos (
             id       INTEGER PRIMARY KEY,
             text     TEXT    NOT NULL,
             done     INTEGER NOT NULL DEFAULT 0,

@@ -1,6 +1,6 @@
 # ona_rust
 
-A command-line Todo list manager. Supports adding, completing, and removing tasks, with optional category tagging. Data is persisted as JSON files in the home directory.
+A command-line Todo list manager with user authentication. Supports adding, completing, and removing tasks, with optional category tagging. Data is persisted in a SQLite database in the home directory.
 
 ## Build
 
@@ -17,6 +17,16 @@ todo <command> [args]
 ```
 
 ### Commands
+
+**Auth (no login required)**
+
+| Command | Description |
+|---|---|
+| `register <username> <password>` | Create an account and log in |
+| `login <username> <password>` | Log in to an existing account |
+| `logout` | End the current session |
+
+**Todo (login required)**
 
 | Command | Description |
 |---|---|
@@ -35,6 +45,9 @@ todo <command> [args]
 ### Examples
 
 ```bash
+# Create an account
+todo register alice mypassword
+
 # Add a todo
 todo add Buy milk
 
@@ -59,6 +72,12 @@ todo category add hobby
 
 # List categories
 todo category list
+
+# Log out
+todo logout
+
+# Log back in
+todo login alice mypassword
 ```
 
 ## Categories
@@ -69,4 +88,5 @@ Built-in categories: `work`, `personal`, `shopping`, `health`. Use `category add
 
 | File | Contents |
 |---|---|
-| `~/.todos.db` | SQLite database — `todos` and `categories` tables |
+| `~/.todos.db` | SQLite database — `users`, `todos`, and `categories` tables |
+| `~/.todo_session` | Plain-text file containing the logged-in username |

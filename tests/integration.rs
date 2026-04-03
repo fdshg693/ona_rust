@@ -1,3 +1,4 @@
+use ona_rust::auth::{cmd_login, cmd_logout, cmd_register, read_session, set_session_path_for_test};
 use ona_rust::category::{parse_category, Category};
 use ona_rust::cli::{cmd_list, run_with_store, PAGE_SIZE};
 use ona_rust::storage::Store;
@@ -12,10 +13,22 @@ fn args(parts: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// Creates a temp store and a pre-authenticated session for the current thread.
+/// All tests that call `run_with_store` for todo commands must use this helper
+/// because `run_with_store` calls `require_auth()` before dispatching.
 fn temp_store() -> (Store, TempDir) {
     let dir = TempDir::new().unwrap();
     let store = Store::from_dir(dir.path());
+    // Use a thread-local session path so parallel tests don't interfere.
+    set_session_path_for_test(dir.path().join("session"));
+    // Register a test user so require_auth() succeeds.
+    cmd_register(&store, "testuser", "testpass").unwrap();
     (store, dir)
+}
+
+/// Helper: register a user and confirm the session is written.
+fn register_user(store: &Store, username: &str, password: &str) {
+    cmd_register(store, username, password).unwrap();
 }
 
 // ── category::parse_category ────────────────────────────────────────────────
@@ -95,8 +108,7 @@ fn next_id_overflow_returns_error() {
 
 #[test]
 fn add_and_list_todo() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Buy milk"]), &store).unwrap();
     let todos = load_todos(&store).unwrap();
     assert_eq!(todos.len(), 1);
@@ -107,8 +119,7 @@ fn add_and_list_todo() {
 
 #[test]
 fn add_multiple_todos_increments_id() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "First"]), &store).unwrap();
     run_with_store(&args(&["add", "Second"]), &store).unwrap();
     let todos = load_todos(&store).unwrap();
@@ -118,8 +129,7 @@ fn add_multiple_todos_increments_id() {
 
 #[test]
 fn add_todo_with_category() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "--cat", "work", "Write report"]), &store).unwrap();
     let todos = load_todos(&store).unwrap();
     assert!(matches!(todos[0].category, Some(Category::Work)));
@@ -137,16 +147,14 @@ fn add_empty_text_returns_error() {
 
 #[test]
 fn add_todo_with_unknown_category_fails() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     let result = run_with_store(&args(&["add", "--cat", "nonexistent", "Task"]), &store);
     assert!(result.is_err());
 }
 
 #[test]
 fn done_marks_todo_complete() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Task"]), &store).unwrap();
     run_with_store(&args(&["done", "1"]), &store).unwrap();
     let todos = load_todos(&store).unwrap();
@@ -155,8 +163,7 @@ fn done_marks_todo_complete() {
 
 #[test]
 fn done_nonexistent_id_returns_error() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     let result = run_with_store(&args(&["done", "99"]), &store);
     assert!(result.is_err());
 }
@@ -173,8 +180,7 @@ fn done_already_done_returns_error() {
 
 #[test]
 fn remove_deletes_todo() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     run_with_store(&args(&["add", "Task"]), &store).unwrap();
     run_with_store(&args(&["remove", "1"]), &store).unwrap();
     let todos = load_todos(&store).unwrap();
@@ -183,23 +189,20 @@ fn remove_deletes_todo() {
 
 #[test]
 fn remove_nonexistent_id_returns_error() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     let result = run_with_store(&args(&["remove", "42"]), &store);
     assert!(result.is_err());
 }
 
 #[test]
 fn list_empty_store_succeeds() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     assert!(run_with_store(&args(&["list"]), &store).is_ok());
 }
 
 #[test]
 fn category_add_and_use() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
     let cats = load_custom_categories(&store).unwrap();
     assert_eq!(cats, vec!["hobby"]);
@@ -212,8 +215,7 @@ fn category_add_and_use() {
 
 #[test]
 fn category_add_duplicate_returns_error() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     run_with_store(&args(&["category", "add", "hobby"]), &store).unwrap();
     let result = run_with_store(&args(&["category", "add", "hobby"]), &store);
     assert!(result.is_err());
@@ -221,8 +223,7 @@ fn category_add_duplicate_returns_error() {
 
 #[test]
 fn category_add_builtin_name_returns_error() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     let result = run_with_store(&args(&["category", "add", "work"]), &store);
     assert!(result.is_err());
 }
@@ -316,8 +317,7 @@ fn category_edit_updates_category_on_todos() {
 
 #[test]
 fn invalid_id_parse_returns_error() {
-    let _dir = TempDir::new().unwrap();
-    let store = Store::from_dir(_dir.path());
+    let (store, _dir) = temp_store();
     assert!(run_with_store(&args(&["done", "abc"]), &store).is_err());
     assert!(run_with_store(&args(&["remove", "abc"]), &store).is_err());
     assert!(run_with_store(&args(&["edit", "abc", "text"]), &store).is_err());
@@ -440,4 +440,165 @@ fn list_empty_store_page_one_succeeds() {
     let (store, _dir) = temp_store();
     // Empty list: no todos, page 1 is still valid
     assert!(cmd_list(&store, 1).is_ok());
+}
+
+// ── auth commands ─────────────────────────────────────────────────────────────
+
+#[test]
+fn register_creates_user_and_writes_session() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    let session = dir.path().join("session");
+    set_session_path_for_test(session);
+
+    register_user(&store, "alice", "secret");
+
+    let username = read_session().unwrap();
+    assert_eq!(username, "alice");
+}
+
+#[test]
+fn register_duplicate_username_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    register_user(&store, "alice", "secret");
+    let result = cmd_register(&store, "alice", "other");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("already taken"));
+}
+
+#[test]
+fn register_duplicate_username_case_insensitive() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    register_user(&store, "Alice", "secret");
+    let result = cmd_register(&store, "alice", "other");
+    assert!(result.is_err());
+}
+
+#[test]
+fn register_empty_username_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    assert!(cmd_register(&store, "", "secret").is_err());
+    assert!(cmd_register(&store, "   ", "secret").is_err());
+}
+
+#[test]
+fn register_empty_password_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    assert!(cmd_register(&store, "alice", "").is_err());
+}
+
+#[test]
+fn login_valid_credentials_writes_session() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    register_user(&store, "bob", "pass123");
+    // Log out first so we can test login independently.
+    cmd_logout().unwrap();
+
+    cmd_login(&store, "bob", "pass123").unwrap();
+    assert_eq!(read_session().unwrap(), "bob");
+}
+
+#[test]
+fn login_wrong_password_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    register_user(&store, "bob", "correct");
+    cmd_logout().unwrap();
+
+    let result = cmd_login(&store, "bob", "wrong");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Invalid username or password"));
+}
+
+#[test]
+fn login_unknown_user_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    let result = cmd_login(&store, "nobody", "pass");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Invalid username or password"));
+}
+
+#[test]
+fn login_case_insensitive_username() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    register_user(&store, "Carol", "pass");
+    cmd_logout().unwrap();
+
+    cmd_login(&store, "carol", "pass").unwrap();
+    // Session stores the canonical casing from registration.
+    assert_eq!(read_session().unwrap(), "Carol");
+}
+
+#[test]
+fn logout_clears_session() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    register_user(&store, "dave", "pass");
+    cmd_logout().unwrap();
+
+    assert!(read_session().is_err());
+}
+
+#[test]
+fn todo_commands_blocked_without_session() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    // Point to a session file that does not exist.
+    set_session_path_for_test(dir.path().join("no_session"));
+
+    let result = run_with_store(&args(&["add", "Task"]), &store);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Not logged in"));
+}
+
+#[test]
+fn todo_commands_work_after_login() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    register_user(&store, "eve", "pass");
+    run_with_store(&args(&["add", "My task"]), &store).unwrap();
+
+    let todos = load_todos(&store).unwrap();
+    assert_eq!(todos.len(), 1);
+    assert_eq!(todos[0].text, "My task");
+}
+
+#[test]
+fn register_and_login_commands_via_run_with_store() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::from_dir(dir.path());
+    set_session_path_for_test(dir.path().join("session"));
+
+    run_with_store(&args(&["register", "frank", "pass"]), &store).unwrap();
+    run_with_store(&args(&["logout"]), &store).unwrap();
+    run_with_store(&args(&["login", "frank", "pass"]), &store).unwrap();
+
+    assert_eq!(read_session().unwrap(), "frank");
 }
