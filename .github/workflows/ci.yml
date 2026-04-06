@@ -1,8 +1,7 @@
 name: CI
 
+# Runs on PRs only. main-branch CI + deploy is handled by deploy.yml.
 on:
-  push:
-    branches: ["main"]
   pull_request:
 
 env:

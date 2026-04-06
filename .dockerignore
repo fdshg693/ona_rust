@@ -1,0 +1,11 @@
+target/
+.git/
+.github/
+.devcontainer/
+.ona/
+infra/
+tests/
+*.md
+Dockerfile
+.dockerignore
+.gitignore

@@ -1,5 +1,5 @@
 {
 	"name": "ona_rust",
 	"image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
-	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y sqlite3"
+	"postCreateCommand": "bash .devcontainer/setup.sh"
 }

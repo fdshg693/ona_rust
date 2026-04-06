@@ -156,3 +156,85 @@ curl -s http://localhost:3000/todos \
 |---|---|
 | `~/.todos.db` | SQLite database — `users`, `todos`, `categories`, and `sessions` tables |
 | `~/.todo_session` | Plain-text file containing the logged-in username (CLI only) |
+
+## Deployment (AWS)
+
+The API server runs on **ECS Fargate** (ap-northeast-1) behind an ALB. SQLite is persisted on **EFS**. Infrastructure is managed with **AWS CDK** in `infra/`.
+
+### Prerequisites
+
+- AWS CLI configured with sufficient permissions
+- Node.js 18+ and CDK v2 (`npm install -g aws-cdk`)
+- Docker
+
+### First-time setup
+
+**1. Bootstrap CDK** (once per AWS account/region):
+
+```bash
+cd infra
+npm install
+cdk bootstrap aws://<ACCOUNT_ID>/ap-northeast-1
+```
+
+**2. Deploy infrastructure**:
+
+```bash
+cdk deploy
+```
+
+Note the outputs — you'll need `EcrRepositoryUri`, `EcsClusterName`, `EcsServiceName`, and `TaskDefinitionFamily`.
+
+**3. Configure GitHub OIDC**
+
+Create an IAM Identity Provider for GitHub Actions in your AWS account:
+
+```bash
+# Create the OIDC provider
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+```
+
+Create an IAM role that GitHub Actions can assume. Trust policy (`trust-policy.json`):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      },
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": "repo:<GITHUB_ORG>/<REPO>:*"
+      }
+    }
+  }]
+}
+```
+
+Attach the following managed policies to the role:
+- `AmazonEC2ContainerRegistryPowerUser`
+- `AmazonECS_FullAccess`
+
+**4. Set GitHub repository secrets**
+
+| Secret | Value |
+|---|---|
+| `AWS_ROLE_ARN` | ARN of the IAM role created above |
+
+### CI/CD flow
+
+| Event | Workflow | Jobs |
+|---|---|---|
+| Pull Request | `ci.yml` | build → test → clippy |
+| Push to `main` | `deploy.yml` | test → build & push to ECR → deploy to ECS |
+
+Deployments use a rolling update strategy (min 100% healthy) with automatic rollback on failure.
